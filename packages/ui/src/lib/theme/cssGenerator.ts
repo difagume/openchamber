@@ -370,7 +370,12 @@ const sidebarBaseRgb = hexToRgb(theme.colors.surface.muted);
   private generateMarkdownColors(markdown: Record<string, string>, theme: Theme): string[] {
     const vars: string[] = [];
     const primary = theme.colors.primary.base;
-    const chatBackground = theme.colors.chat?.background || theme.colors.surface.background;
+    const inlineCodeBg = this.resolveInlineCodeBackground(markdown.inlineCodeBackground, theme);
+    const inlineCodeColor = this.resolveInlineCodeColor(
+      markdown.inlineCode,
+      theme,
+      inlineCodeBg,
+    );
 
     vars.push(`  --markdown-heading1: ${markdown.heading1 || primary};`);
     vars.push(`  --markdown-heading2: ${markdown.heading2 || this.opacity(primary, 0.9)};`);
@@ -378,8 +383,9 @@ const sidebarBaseRgb = hexToRgb(theme.colors.surface.muted);
     vars.push(`  --markdown-heading4: ${markdown.heading4 || theme.colors.surface.foreground};`);
     vars.push(`  --markdown-link: ${markdown.link || primary};`);
     vars.push(`  --markdown-link-hover: ${markdown.linkHover || theme.colors.primary.hover || this.darken(primary, 10)};`);
-    vars.push(`  --markdown-inline-code: ${markdown.inlineCode || theme.colors.syntax.base.string};`);
-    vars.push(`  --markdown-inline-code-bg: ${markdown.inlineCodeBackground || chatBackground};`);
+    vars.push(`  --markdown-inline-code: ${inlineCodeColor};`);
+    vars.push(`  --markdown-inline-code-bg: ${inlineCodeBg};`);
+    vars.push(`  --markdown-inline-code-border: ${this.opacity(theme.colors.interactive.border, 0.25)};`);
     vars.push(`  --markdown-blockquote: ${markdown.blockquote || theme.colors.surface.mutedForeground};`);
     vars.push(`  --markdown-blockquote-border: ${markdown.blockquoteBorder || theme.colors.interactive.border};`);
     vars.push(`  --markdown-list-marker: ${markdown.listMarker || this.opacity(primary, 0.6)};`);
@@ -394,7 +400,8 @@ const sidebarBaseRgb = hexToRgb(theme.colors.surface.muted);
   private generateDefaultMarkdownColors(theme: Theme): string[] {
     const vars: string[] = [];
     const primary = theme.colors.primary.base;
-    const chatBackground = theme.colors.chat?.background || theme.colors.surface.background;
+    const inlineCodeBg = this.resolveInlineCodeBackground(undefined, theme);
+    const inlineCodeColor = this.resolveInlineCodeColor(undefined, theme, inlineCodeBg);
 
     vars.push(`  --markdown-heading1: ${primary};`);
     vars.push(`  --markdown-heading2: ${this.opacity(primary, 0.9)};`);
@@ -402,8 +409,9 @@ const sidebarBaseRgb = hexToRgb(theme.colors.surface.muted);
     vars.push(`  --markdown-heading4: ${theme.colors.surface.foreground};`);
     vars.push(`  --markdown-link: ${primary};`);
     vars.push(`  --markdown-link-hover: ${theme.colors.primary.hover || this.darken(primary, 10)};`);
-    vars.push(`  --markdown-inline-code: ${theme.colors.syntax.base.string};`);
-    vars.push(`  --markdown-inline-code-bg: ${chatBackground};`);
+    vars.push(`  --markdown-inline-code: ${inlineCodeColor};`);
+    vars.push(`  --markdown-inline-code-bg: ${inlineCodeBg};`);
+    vars.push(`  --markdown-inline-code-border: ${this.opacity(theme.colors.interactive.border, 0.25)};`);
     vars.push(`  --markdown-blockquote: ${theme.colors.surface.mutedForeground};`);
     vars.push(`  --markdown-blockquote-border: ${theme.colors.interactive.border};`);
     vars.push(`  --markdown-list-marker: ${this.opacity(primary, 0.6)};`);
@@ -756,6 +764,117 @@ const sidebarBaseRgb = hexToRgb(theme.colors.surface.muted);
   private emphasize(color: string): string {
 
     return this.lighten(color, 15);
+  }
+
+  private parseHexRgb(color: string): { r: number; g: number; b: number } | null {
+    if (!color || typeof color !== 'string' || !color.startsWith('#')) return null;
+    let hex = color.trim().slice(1);
+    if (hex.length === 3 || hex.length === 4) {
+      hex = hex
+        .split('')
+        .map((c) => c + c)
+        .join('');
+    }
+    if (hex.length === 8) hex = hex.slice(0, 6);
+    if (hex.length !== 6) return null;
+    const int = Number.parseInt(hex, 16);
+    if (Number.isNaN(int)) return null;
+    return { r: (int >> 16) & 255, g: (int >> 8) & 255, b: int & 255 };
+  }
+
+  private isLightColor(color: string): boolean {
+    const rgb = this.parseHexRgb(color);
+    if (!rgb) return false;
+    const avg = (rgb.r + rgb.g + rgb.b) / 3;
+    return avg > 128;
+  }
+
+  private resolveInlineCodeBackground(explicit: string | undefined, theme: Theme): string {
+    // Respect theme value only when it actually contrasts with the chat background.
+    // Ayu uses inlineCodeBackground ≈ surface.background (Δ < 5) so it would be invisible.
+    if (explicit) {
+      const bgRgb = this.parseHexRgb(theme.colors.surface.background);
+      const codeRgb = this.parseHexRgb(explicit);
+      if (bgRgb && codeRgb) {
+        const bgAvg = (bgRgb.r + bgRgb.g + bgRgb.b) / 3;
+        const codeAvg = (codeRgb.r + codeRgb.g + codeRgb.b) / 3;
+        if (Math.abs(bgAvg - codeAvg) >= 20) return explicit;
+      } else {
+        // Non-hex value — trust the theme author
+        return explicit;
+      }
+    }
+    // Guaranteed contrast derived from surface background itself
+    const bg = theme.colors.surface.background;
+    if (this.isLightColor(bg)) {
+      // Light theme → chip must be darker than chat
+      const derived = this.darken(bg, 5);
+      // darken(5) shifts avg by ~13 — subtle but visible (Δ 10-14)
+      if (derived && derived !== bg) return derived;
+      return this.darken(theme.colors.surface.muted, 3);
+    }
+    const derived = this.lighten(bg, 5);
+    if (derived && derived !== bg) return derived;
+    return this.lighten(theme.colors.surface.muted, 3);
+  }
+
+  private getRelativeLuminance(hex: string): number | null {
+    const rgb = this.parseHexRgb(hex);
+    if (!rgb) return null;
+    const toLinear = (c: number): number => {
+      const s = c / 255;
+      return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    };
+    return 0.2126 * toLinear(rgb.r) + 0.7152 * toLinear(rgb.g) + 0.0722 * toLinear(rgb.b);
+  }
+
+  private getContrastRatio(foreground: string, background: string): number | null {
+    const l1 = this.getRelativeLuminance(foreground);
+    const l2 = this.getRelativeLuminance(background);
+    if (l1 === null || l2 === null) return null;
+    const lighter = Math.max(l1, l2);
+    const darker = Math.min(l1, l2);
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+
+  private resolveInlineCodeColor(
+    explicit: string | undefined,
+    theme: Theme,
+    inlineCodeBg: string,
+  ): string {
+    const fallback = theme.colors.syntax.base.string;
+    const candidate = explicit || fallback;
+    if (!candidate || typeof candidate !== 'string' || !candidate.startsWith('#')) {
+      return candidate || fallback;
+    }
+    // Dark variant is approved by user — keep untouched (background lighten 5, color as-is)
+    if (theme.metadata.variant !== 'light') return candidate;
+
+    // Light theme only: ensure WCAG contrast against the derived chip background
+    const bg = inlineCodeBg || this.resolveInlineCodeBackground(undefined, theme);
+    const bgRgb = this.parseHexRgb(bg);
+    const textRgb = this.parseHexRgb(candidate);
+    if (!bgRgb || !textRgb) return candidate;
+
+    // Quick gate: if background is dark (should not happen for light), skip
+    const bgAvg = (bgRgb.r + bgRgb.g + bgRgb.b) / 3;
+    if (bgAvg < 200) return candidate;
+
+    const contrast = this.getContrastRatio(candidate, bg);
+    if (contrast !== null && contrast >= 4.5) return candidate;
+
+    // Heuristic from spec: if text is relatively light (perceived luminance > 0.35
+    // or weighted avg > 130) and contrast is low, darken text. We iterate
+    // darken steps and pick first that reaches WCAG AA (4.5:1).
+    // This fixes Ayu light #7FAD00 (contrast 2.28 vs #f0ede7) without touching dark.
+    const steps = [10, 15, 18, 21, 25, 30];
+    for (const step of steps) {
+      const darkened = this.darken(candidate, step);
+      const c = this.getContrastRatio(darkened, bg);
+      if (c !== null && c >= 4.5) return darkened;
+    }
+    // Fallback: strongest darken that still preserves hue
+    return this.darken(candidate, 25);
   }
 
   private kebabCase(str: string): string {
